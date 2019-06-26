@@ -75,7 +75,8 @@ def use_kwargs(argmap, locations=None, inherit=None, apply=None, **kwargs):
         return activate(func)
     return wrapper
 
-def marshal_with(schema, code='default', description='', inherit=None, apply=None):
+def marshal_with(schema, code='default', description='', content_type=None,
+                 inherit=None, apply=None):
     """Marshal the return value of the decorated view function using the
     specified schema.
 
@@ -94,6 +95,7 @@ def marshal_with(schema, code='default', description='', inherit=None, apply=Non
     :param schema: :class:`Schema <marshmallow.Schema>` class or instance, or `None`
     :param code: Optional HTTP response code
     :param description: Optional response description
+    :param content_type: Optional response content type header (only used in OpenAPI 3.x)
     :param inherit: Inherit schemas from parent classes
     :param apply: Marshal response with specified schema
     """
@@ -102,6 +104,7 @@ def marshal_with(schema, code='default', description='', inherit=None, apply=Non
             code: {
                 'schema': schema or {},
                 'description': description,
+                'content_type': content_type,
             },
         }
         annotate(func, 'schemas', [options], inherit=inherit, apply=apply)
