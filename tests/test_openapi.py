@@ -100,7 +100,7 @@ class TestFunctionView_OpenAPI3:
     def function_view(self, app, models, schemas):
         @app.route('/bands/<int:band_id>/')
         @doc(tags=['band'])
-        @use_kwargs({'name': fields.Str(missing='queen')}, locations=('query',))
+        @use_kwargs({'name': fields.Str(missing='queen')}, location='query')
         @marshal_with(schemas.BandSchema, description='a band', content_type='text/json')
         def get_band(band_id):
             return models.Band(name='slowdive', genre='spacerock')
