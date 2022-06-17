@@ -101,7 +101,7 @@ class Converter(object):
                     meta.pop('content_type', None)
                     exploded[status_code] = meta
                 else:
-                    content_type = meta['content_type'] or 'application/json'
+                    content_type = meta.get('content_type') or 'application/json'
                     exploded[status_code] = {
                         'content': {
                             content_type: {
