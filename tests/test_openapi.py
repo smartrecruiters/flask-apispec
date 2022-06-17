@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 import pytest
 from apispec import APISpec
 from apispec.ext.marshmallow import MarshmallowPlugin
@@ -35,7 +33,7 @@ def spec_oapi3(marshmallow_plugin):
 
 @pytest.fixture()
 def openapi(marshmallow_plugin):
-    return marshmallow_plugin.openapi
+    return marshmallow_plugin.converter
 
 def ref_path(spec):
     if spec.openapi_version.version[0] < 3:
@@ -54,14 +52,13 @@ def test_error_if_spec_does_not_have_marshmallow_plugin(app):
     with pytest.raises(RuntimeError):
         ResourceConverter(app=app, spec=bad_spec)
 
-
 class TestFunctionView:
 
     @pytest.fixture
     def function_view(self, app, models, schemas):
         @app.route('/bands/<int:band_id>/')
         @doc(tags=['band'])
-        @use_kwargs({'name': fields.Str(missing='queen')}, locations=('query', ))
+        @use_kwargs({'name': fields.Str(missing='queen')}, location='query')
         @marshal_with(schemas.BandSchema, description='a band')
         def get_band(band_id):
             return models.Band(name='slowdive', genre='spacerock')
@@ -150,7 +147,7 @@ class TestArgSchema:
             name = fields.Str()
 
         @app.route('/bands/<int:band_id>/')
-        @use_kwargs(ArgSchema, locations=('query', ))
+        @use_kwargs(ArgSchema, location='query')
         def get_band(**kwargs):
             return kwargs
         return get_band
@@ -167,8 +164,8 @@ class TestArgSchema:
         params = path['get']['parameters']
         rule = app.url_map._rules_by_endpoint['get_band'][0]
         expected = (
-            openapi.fields2parameters(
-                {'name': fields.Str()}, default_in='query') +
+            openapi.schema2parameters(
+                Schema.from_dict({'name': fields.Str()}), location='query') +
             rule_to_params(rule)
         )
         assert params == expected
@@ -184,7 +181,7 @@ class TestCallableAsArgSchema(TestArgSchema):
             return ArgSchema
 
         @app.route('/bands/<int:band_id>/')
-        @use_kwargs(schema_factory, locations=('query', ))
+        @use_kwargs(schema_factory, location='query')
         def get_band(**kwargs):
             return kwargs
         return get_band
@@ -218,7 +215,7 @@ class TestResourceView:
     def resource_view(self, app, models, schemas):
         @doc(tags=['band'])
         class BandResource(MethodResource):
-            @use_kwargs({'name': fields.Str()}, locations=('query', ))
+            @use_kwargs({'name': fields.Str()}, location='query')
             @marshal_with(schemas.BandSchema, description='a band')
             def get(self, **kwargs):
                 return models.Band('slowdive', 'shoegaze')
@@ -238,8 +235,7 @@ class TestResourceView:
         params = path['get']['parameters']
         rule = app.url_map._rules_by_endpoint['band'][0]
         expected = (
-            openapi.fields2parameters(
-                {'name': fields.Str()}, default_in='query') +
+            [{'in': 'query', 'name': 'name', 'required': False, 'type': 'string'}] +
             rule_to_params(rule)
         )
         assert params == expected
@@ -251,3 +247,135 @@ class TestResourceView:
 
     def test_tags(self, path):
         assert path['get']['tags'] == ['band']
+
+
+class TestMultipleLocations:
+
+    @pytest.fixture
+    def function_view(self, app, models, schemas):
+        class QuerySchema(Schema):
+            name = fields.Str()
+
+        class BodySchema(Schema):
+            address = fields.Str()
+
+        @app.route('/bands/<int:band_id>/')
+        @use_kwargs(QuerySchema, location='query')
+        @use_kwargs(BodySchema, location='body')
+        def get_band(**kwargs):
+            return kwargs
+        return get_band
+
+    @pytest.fixture
+    def path(self, app, spec, function_view):
+        converter = ViewConverter(app=app, spec=spec)
+        paths = converter.convert(function_view)
+        for path in paths:
+            spec.path(**path)
+        return spec._paths['/bands/{band_id}/']
+
+    def test_params(self, app, path):
+        params = path['get']['parameters']
+        rule = app.url_map._rules_by_endpoint['get_band'][0]
+        expected = (
+            [{
+                'in': 'query',
+                'name': 'name',
+                'required': False,
+                'type': 'string'
+            }, {
+                'in': 'body',
+                'name': 'body',
+                'required': False,
+                'schema': {'$ref': '#/definitions/Body'}
+            }] + rule_to_params(rule)
+        )
+        assert params == expected
+
+class TestGetFieldsNoLocationProvided:
+
+    @pytest.fixture
+    def function_view(self, app):
+        @app.route('/bands/<int:band_id>/')
+        @use_kwargs({'name': fields.Str(), 'address': fields.Str()})
+        def get_band(**kwargs):
+            return kwargs
+
+        return get_band
+
+    @pytest.fixture
+    def path(self, app, spec, function_view):
+        converter = ViewConverter(app=app, spec=spec)
+        paths = converter.convert(function_view)
+        for path in paths:
+            spec.path(**path)
+        return spec._paths['/bands/{band_id}/']
+
+    def test_params(self, app, path):
+        params = path['get']['parameters']
+        assert {
+            'in': 'body',
+            'name': 'body',
+            'required': False,
+            'schema': {
+                'properties': {
+                    'address': {'type': 'string'},
+                    'name': {'type': 'string'},
+                },
+                'type': 'object',
+            },
+        } in params
+
+class TestGetFieldsBodyLocation(TestGetFieldsNoLocationProvided):
+
+    @pytest.fixture
+    def function_view(self, app):
+        @app.route('/bands/<int:band_id>/')
+        @use_kwargs({'name': fields.Str(required=True), 'address': fields.Str(), 'email': fields.Str(required=True)})
+        def get_band(**kwargs):
+            return kwargs
+
+        return get_band
+
+    def test_params(self, app, path):
+        params = path['get']['parameters']
+        assert {
+            'in': 'body',
+            'name': 'body',
+            'required': False,
+            'schema': {
+                'properties': {
+                    'address': {'type': 'string'},
+                    'name': {'type': 'string'},
+                    'email': {'type': 'string'},
+                },
+                'required': ["name", "email"],
+                'type': 'object',
+            },
+        } in params
+
+class TestSchemaNoLocationProvided:
+
+    @pytest.fixture
+    def function_view(self, app, models, schemas):
+        class BodySchema(Schema):
+            address = fields.Str()
+
+        @app.route('/bands/<int:band_id>/')
+        @use_kwargs(BodySchema)
+        def get_band(**kwargs):
+            return kwargs
+        return get_band
+
+    @pytest.fixture
+    def path(self, app, spec, function_view):
+        converter = ViewConverter(app=app, spec=spec)
+        paths = converter.convert(function_view)
+        for path in paths:
+            spec.path(**path)
+        return spec._paths['/bands/{band_id}/']
+
+    def test_params(self, app, path):
+        params = path['get']['parameters']
+        assert {'name': 'body', 'in': 'body', 'required': False,
+                'schema': {'$ref': '#/definitions/Body'}} in params

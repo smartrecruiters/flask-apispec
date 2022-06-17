@@ -1,9 +1,7 @@
-# -*- coding: utf-8 -*-
-
 import copy
+import functools
 
-import six
-
+import apispec
 from apispec.core import VALID_METHODS
 from apispec.ext.marshmallow import MarshmallowPlugin
 
@@ -13,11 +11,15 @@ from marshmallow.utils import is_instance_or_subclass
 from flask_apispec.paths import rule_to_path, rule_to_params
 from flask_apispec.utils import resolve_resource, resolve_annotations, merge_recursive
 
-class Converter(object):
+APISPEC_VERSION_INFO = tuple(
+    [int(part) for part in apispec.__version__.split('.') if part.isdigit()]
+)
 
-    def __init__(self, app, spec):
+class Converter:
+    def __init__(self, app, spec, document_options=True):
         self.app = app
         self.spec = spec
+        self.document_options = document_options
         try:
             self.marshmallow_plugin = next(
                 plugin for plugin in self.spec.plugins
@@ -40,13 +42,16 @@ class Converter(object):
         operations = self.get_operations(rule, target)
         parent = self.get_parent(target, **kwargs)
         valid_methods = VALID_METHODS[self.spec.openapi_version.major]
+        excluded_methods = {'head'}
+        if not self.document_options:
+            excluded_methods.add('options')
         return {
             'view': target,
             'path': rule_to_path(rule),
             'operations': {
                 method.lower(): self.get_operation(rule, view, parent=parent)
-                for method, view in six.iteritems(operations)
-                if method.lower() in (set(valid_methods) - {'head'})
+                for method, view in operations.items()
+                if method.lower() in (set(valid_methods) - excluded_methods)
             },
         }
 
@@ -67,27 +72,26 @@ class Converter(object):
         return None
 
     def get_parameters(self, rule, view, docs, parent=None):
-        openapi = self.marshmallow_plugin.openapi
+        openapi = self.marshmallow_plugin.converter
         annotation = resolve_annotations(view, 'args', parent)
-        args = merge_recursive(annotation.options)
-        schema = args.get('args', {})
-        if is_instance_or_subclass(schema, Schema):
-            converter = openapi.schema2parameters
-        elif callable(schema):
-            schema = schema(request=None)
-            if is_instance_or_subclass(schema, Schema):
-                converter = openapi.schema2parameters
-            else:
-                converter = openapi.fields2parameters
-        else:
-            converter = openapi.fields2parameters
-        options = copy.copy(args.get('kwargs', {}))
-        locations = options.pop('locations', None)
-        if locations:
-            options['default_in'] = locations[0]
+        extra_params = []
+        for args in annotation.options:
+            schema = args.get('args', {})
+            openapi_converter = openapi.schema2parameters
+            if not is_instance_or_subclass(schema, Schema):
+                if callable(schema):
+                    schema = schema(request=None)
+                else:
+                    schema = Schema.from_dict(schema)
+                    openapi_converter = functools.partial(
+                        self._convert_dict_schema, openapi_converter)
+
+            options = copy.copy(args.get('kwargs', {}))
+            if not options.get('location'):
+                options['location'] = 'body'
+            extra_params += openapi_converter(schema, **options) if args else []
 
         rule_params = rule_to_params(rule, docs.get('params')) or []
-        extra_params = converter(schema, **options) if args else []
 
         return extra_params + rule_params
 
@@ -113,6 +117,33 @@ class Converter(object):
                         exploded[status_code]['description'] = meta['description']
             options.append(exploded)
         return merge_recursive(options)
+
+    def _convert_dict_schema(self, openapi_converter, schema, location, **options):
+        """When location is 'body' and OpenApi is 2, return one param for body fields.
+
+        Otherwise return fields exactly as converted by apispec."""
+        if self.spec.openapi_version.major < 3 and location == 'body':
+            params = openapi_converter(schema, location=None, **options)
+            body_parameter = {
+                "in": "body",
+                "name": "body",
+                "required": False,
+                "schema": {
+                    "type": "object",
+                    "properties": {},
+                },
+            }
+            for param in params:
+                name = param["name"]
+                body_parameter["schema"]["properties"].update({name: param})
+                if param.get("required", False):
+                    body_parameter["schema"].setdefault("required", []).append(name)
+                del param["name"]
+                del param["in"]
+                del param["required"]
+            return [body_parameter]
+
+        return openapi_converter(schema, location=location, **options)
 
 class ViewConverter(Converter):
 
